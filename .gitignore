@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+api_key.txt
+ue5_result.json
+ue5_command.py
+ue5_panels.json
+debug_screenshot.png
+dist/
+build/
+*.spec
+ocr_models/
+*.egg-info/

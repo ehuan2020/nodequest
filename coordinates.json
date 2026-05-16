@@ -1,0 +1,55 @@
+{
+  "calibrated": true,
+  "Main Toolbar": {
+    "x": 244.0,
+    "y": 9.0
+  },
+  "Content Browser": {
+    "x": 1834.0,
+    "y": 1154.0
+  },
+  "Details Panel": {
+    "x": 1991.0,
+    "y": 523.0
+  },
+  "Outliner": {
+    "x": 2011.0,
+    "y": 115.0
+  },
+  "Viewport Center": {
+    "x": 1255.0,
+    "y": 444.0
+  },
+  "Blueprint Graph": {
+    "x": 1255.0,
+    "y": 444.0
+  },
+  "Material Graph": {
+    "x": 1255.0,
+    "y": 444.0
+  },
+  "File Menu": {
+    "x": 50.0,
+    "y": 9.0
+  },
+  "Window Menu": {
+    "x": 200.0,
+    "y": 9.0
+  },
+  "Add Button": {
+    "x": 130.0,
+    "y": 9.0
+  },
+  "Place Actors": {
+    "x": 130.0,
+    "y": 9.0
+  },
+  "Context Menu": {
+    "x": 1834.0,
+    "y": 800.0
+  },
+  "Left-click on the 'Material' option from the context menu to create the new asset": {
+    "x": 1050.0,
+    "y": 467.0
+  }
+}
