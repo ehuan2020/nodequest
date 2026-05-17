@@ -14,3 +14,8 @@ ocr_models/
 
 # Ignore local test screenshots
 tmp*.png
+
+# Global weights catches
+OmniParser/*.safetensors
+OmniParser/*.pt
+**/weights/**
