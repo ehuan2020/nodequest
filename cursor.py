@@ -208,3 +208,15 @@ class CursorOverlay(QWidget):
     def _finish_flash(self, color: str):
         self.arrow_color = QColor(color)
         self.update()
+
+    def flash_green(self):
+        original = self.arrow_color
+        self.arrow_color = QColor('#27AE60')
+        self.update()
+        QTimer.singleShot(500, lambda: setattr(self, 'arrow_color', original) or self.update())
+
+    def flash_red(self):
+        original = self.arrow_color
+        self.arrow_color = QColor('#E74C3C')
+        self.update()
+        QTimer.singleShot(300, lambda: setattr(self, 'arrow_color', original) or self.update())

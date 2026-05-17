@@ -6,13 +6,16 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, QThreadPool
 from PyQt6.QtGui import QFont
 
+import win32api
 import win32gui
 import win32con
+import time
 
 from state_machine import StateMachine, AppState
 from worker import Worker
 import gemini_client
 import locator
+import screen_parser
 
 
 class OverlayWindow(QWidget):
@@ -27,6 +30,19 @@ class OverlayWindow(QWidget):
         self._spinner_count = 0
         self._goal_text = ""
         self._workers: list[Worker] = []
+
+        omni_worker = Worker(screen_parser.start_server)
+        omni_worker.signals.finished.connect(
+            lambda: self._workers.remove(omni_worker) if omni_worker in self._workers else None
+        )
+        self._workers.append(omni_worker)
+        QThreadPool.globalInstance().start(omni_worker)
+
+        self._current_target = (0, 0)
+        self._step_shown_time = 0.0
+        self._poll_timer = None
+        self._last_left = False
+        self._last_right = False
 
         self._spinner_timer = QTimer(self)
         self._spinner_timer.timeout.connect(self._tick_spinner)
@@ -79,7 +95,7 @@ class OverlayWindow(QWidget):
         self._drag_pos = None
 
     def keyPressEvent(self, event):
-        if event.key() == Qt.Key.Key_Space and self._sm.is_state(AppState.GUIDING):
+        if event.key() == Qt.Key.Key_Space and self._sm.current_state in (AppState.GUIDING, AppState.WAITING_FOR_USER):
             self.advance_step()
         elif event.key() == Qt.Key.Key_Escape:
             self.reset_to_idle()
@@ -205,6 +221,11 @@ class OverlayWindow(QWidget):
         self._progress_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         guiding_lay.addWidget(self._progress_lbl)
 
+        self._guide_status_lbl = QLabel()
+        self._guide_status_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._guide_status_lbl.setWordWrap(True)
+        guiding_lay.addWidget(self._guide_status_lbl)
+
         lay.addWidget(self._guiding_panel)
 
         # ==== ERROR panel ====
@@ -269,6 +290,7 @@ class OverlayWindow(QWidget):
             QPushButton:hover { background-color: #555577; }
         """)
         self._progress_lbl.setStyleSheet("color: #555577; font-size: 9pt;")
+        self._guide_status_lbl.setStyleSheet("color: #AAAACC; font-size: 9pt;")
         self._error_lbl.setStyleSheet("color: #FF4444; font-size: 9pt; padding: 4px;")
         self._restart_btn.setStyleSheet("""
             QPushButton { background-color: #884422; color: white; border-radius: 6px; padding: 8px; }
@@ -278,6 +300,8 @@ class OverlayWindow(QWidget):
 
     def reset_to_idle(self):
         self._spinner_timer.stop()
+        if self._poll_timer is not None:
+            self._poll_timer.stop()
         self._sm.reset()
         self._goal_text = ""
         self._goal_lbl.setText("")
@@ -298,7 +322,7 @@ class OverlayWindow(QWidget):
 
         self._idle_panel.setVisible(state == AppState.IDLE)
         self._loading_panel.setVisible(state == AppState.LOADING)
-        self._guiding_panel.setVisible(state == AppState.GUIDING)
+        self._guiding_panel.setVisible(state in (AppState.GUIDING, AppState.WAITING_FOR_USER))
         self._error_panel.setVisible(state == AppState.ERROR)
 
         if state == AppState.LOADING:
@@ -346,6 +370,7 @@ class OverlayWindow(QWidget):
         self._update_step_visuals()
         self._update_progress_text()
         self._show_current_step()
+        self.start_click_polling()
 
     def _on_error(self, msg):
         self._sm.set_state(AppState.ERROR)
@@ -353,7 +378,7 @@ class OverlayWindow(QWidget):
         self._error_lbl.setText(f"Error: {msg}")
 
     def _on_skip(self):
-        if not self._steps or not self._sm.is_state(AppState.GUIDING):
+        if not self._steps or self._sm.current_state not in (AppState.GUIDING, AppState.WAITING_FOR_USER):
             return
         if self._current_step < len(self._steps) - 1:
             self._current_step += 1
@@ -364,6 +389,8 @@ class OverlayWindow(QWidget):
             self._finish_tutorial()
 
     def _finish_tutorial(self):
+        if self._poll_timer is not None:
+            self._poll_timer.stop()
         if self._cursor:
             self._cursor.hide_cursor()
         self.reset_to_idle()
@@ -377,9 +404,12 @@ class OverlayWindow(QWidget):
         step = self._steps[self._current_step]
         x, y = locator.get_coordinates(step["anchor"])
         print(f"[overlay] moving cursor to {x}, {y} for step '{step['title']}'")
+        self._sm.set_state(AppState.WAITING_FOR_USER)
         if self._cursor:
             self._cursor.show_cursor()
             self._cursor.move_to(x, y, step["action"])
+        self._current_target = (x, y)
+        self._step_shown_time = time.time()
 
     # ------------------------------------------------------------------ step list
 
@@ -476,7 +506,7 @@ class OverlayWindow(QWidget):
     # ------------------------------------------------------------------ advance
 
     def advance_step(self):
-        if not self._steps or not self._sm.is_state(AppState.GUIDING):
+        if not self._steps or self._sm.current_state not in (AppState.GUIDING, AppState.WAITING_FOR_USER):
             return
         self._completed_steps.add(self._current_step)
         if self._current_step < len(self._steps) - 1:
@@ -486,3 +516,93 @@ class OverlayWindow(QWidget):
             self._show_current_step()
         else:
             self._finish_tutorial()
+
+    # ------------------------------------------------------------------ click polling
+
+    def start_click_polling(self):
+        if self._poll_timer is not None:
+            self._poll_timer.stop()
+        self._poll_timer = QTimer(self)
+        self._poll_timer.timeout.connect(self._check_click)
+        self._poll_timer.start(100)
+        self._last_left = False
+        self._last_right = False
+        self._step_shown_time = time.time()
+
+    def _check_click(self):
+        if not self._sm.is_state(AppState.WAITING_FOR_USER):
+            return
+        ldown = bool(win32api.GetAsyncKeyState(0x01) & 0x8000)
+        rdown = bool(win32api.GetAsyncKeyState(0x02) & 0x8000)
+        clicked = (ldown and not self._last_left) or (rdown and not self._last_right)
+        self._last_left = ldown
+        self._last_right = rdown
+        if not clicked:
+            return
+        if time.time() - self._step_shown_time < 1.0:
+            return
+        cx, cy = win32api.GetCursorPos()
+        tx, ty = self._current_target
+        dist = ((cx - tx) ** 2 + (cy - ty) ** 2) ** 0.5
+        print(f"[click] at ({cx},{cy}) target ({tx},{ty}) dist={dist:.0f}")
+        if dist < 300:
+            self._on_correct_click()
+        else:
+            self._on_wrong_click(cx, cy)
+
+    def _on_correct_click(self):
+        self._sm.set_state(AppState.GUIDING)
+        self._cursor.flash_green()
+        if self._current_step >= len(self._steps) - 1:
+            QTimer.singleShot(600, self._finish_tutorial)
+            return
+        QTimer.singleShot(600, self._find_and_advance)
+
+    def _on_wrong_click(self, cx, cy):
+        self._cursor.flash_red()
+        self._guide_status_lbl.setText("Try again — click closer to the cursor")
+        QTimer.singleShot(2000, lambda: self._guide_status_lbl.setText(""))
+
+    def _find_and_advance(self):
+        next_idx = self._current_step + 1
+        next_step = self._steps[next_idx]
+        self._guide_status_lbl.setText("Finding next target...")
+
+        def find_next():
+            screenshot = screen_parser.take_screenshot()
+            coords = screen_parser.find_element(next_step.get('anchor', ''), screenshot)
+            if coords is None:
+                coords = screen_parser.find_element(next_step.get('title', ''), screenshot)
+            return (coords, next_step, next_idx)
+
+        worker = Worker(find_next)
+        worker.signals.result.connect(self._on_next_found)
+        worker.signals.error.connect(lambda e: self._fallback_advance(next_step, next_idx))
+        self._workers.append(worker)
+        worker.signals.finished.connect(
+            lambda: self._workers.remove(worker) if worker in self._workers else None
+        )
+        QThreadPool.globalInstance().start(worker)
+
+    def _on_next_found(self, result):
+        coords, next_step, next_idx = result
+        self._completed_steps.add(self._current_step)
+        self._current_step = next_idx
+        if coords:
+            x, y = coords
+        else:
+            x, y = locator.get_coordinates(next_step.get('anchor', ''))
+        self._current_target = (x, y)
+        self._step_shown_time = time.time()
+        self._cursor.move_to(x, y, next_step.get('action', 'click'))
+        self._sm.set_state(AppState.WAITING_FOR_USER)
+        self._update_step_visuals()
+        self._update_progress_text()
+        self._guide_status_lbl.setText("")
+
+    def _fallback_advance(self, next_step=None, next_idx=None):
+        if next_step is None:
+            next_idx = self._current_step + 1
+            next_step = self._steps[next_idx]
+        x, y = locator.get_coordinates(next_step.get('anchor', ''))
+        self._on_next_found(((x, y), next_step, next_idx))

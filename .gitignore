@@ -11,3 +11,6 @@ build/
 *.spec
 ocr_models/
 *.egg-info/
+
+# Ignore local test screenshots
+tmp*.png
